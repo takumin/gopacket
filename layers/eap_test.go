@@ -1,0 +1,94 @@
+// Copyright 2020 The GoPacket Authors. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style license that can be found
+// in the LICENSE file in the root of the source tree.
+
+package layers
+
+import (
+	"reflect"
+	"testing"
+
+	"github.com/google/gopacket"
+)
+
+func checkEAP(desc string, t *testing.T, packetBytes []byte, pExpectedEAP *EAP) {
+	// Analyse the packet bytes, yielding a new packet object p.
+	p := gopacket.NewPacket(packetBytes, LinkTypeEthernet, gopacket.Default)
+	if p.ErrorLayer() != nil {
+		t.Errorf("Failed to decode packet %s: %v", desc, p.ErrorLayer().Error())
+	}
+
+	// Ensure that the packet analysis yielded the correct set of layers:
+	//    Link Layer        = Ethernet.
+	//    Network Layer     = IPv4.
+	//    Transport Layer   = UDP.
+	//    Application Layer = RADIUS.
+	//                        EAP.
+	checkLayers(p, []gopacket.LayerType{
+		LayerTypeEthernet,
+		LayerTypeIPv4,
+		LayerTypeUDP,
+		LayerTypeRADIUS,
+		LayerTypeEAP,
+	}, t)
+
+	// Select the EAP layer.
+	pResultEAP, ok := p.Layer(LayerTypeEAP).(*EAP)
+	if !ok {
+		t.Error("No EAP layer type found in packet in " + desc + ".")
+	}
+
+	// Compare the generated EAP object with the expected EAP object.
+	if !reflect.DeepEqual(pResultEAP, pExpectedEAP) {
+		t.Errorf("EAP packet processing failed for packet "+desc+
+			":\ngot  :\n%#v\n\nwant :\n%#v\n\n", pResultEAP, pExpectedEAP)
+	}
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{}
+	err := pResultEAP.SerializeTo(buf, opts)
+	if err != nil {
+		t.Error(err)
+	}
+	if !reflect.DeepEqual(pResultEAP.BaseLayer.Contents, buf.Bytes()) {
+		t.Errorf("EAP packet serialization failed for packet "+desc+
+			":\ngot  :\n%x\n\nwant :\n%x\n\n", buf.Bytes(), packetBytes)
+	}
+}
+
+func TestEAPResponseIdentify(t *testing.T) {
+	// This test packet is the first EAP packet in the EAP sample capture
+	// pcap file radtest.pcap on the Wireshark sample captures page:
+	//
+	//    https://github.com/egxp/docker-compose-test-radius
+	var testPacketEAP = []byte{
+		0x02, 0x42, 0xac, 0x15, 0x00, 0x02, 0x02, 0x42, 0x63, 0x61, 0xf8, 0x0f, 0x08, 0x00, 0x45, 0x00,
+		0x00, 0x98, 0x5f, 0x8a, 0x40, 0x00, 0x40, 0x11, 0x82, 0x9d, 0xac, 0x15, 0x00, 0x01, 0xac, 0x15,
+		0x00, 0x02, 0xbf, 0xa9, 0x07, 0x14, 0x00, 0x84, 0x58, 0xc3, 0x01, 0x00, 0x00, 0x7c, 0x84, 0xa6,
+		0x02, 0x35, 0x57, 0x60, 0x56, 0x30, 0x3b, 0xca, 0x09, 0xef, 0xf6, 0x6d, 0x38, 0xab, 0x01, 0x07,
+		0x41, 0x64, 0x6d, 0x69, 0x6e, 0x04, 0x06, 0x7f, 0x00, 0x00, 0x01, 0x1f, 0x13, 0x30, 0x32, 0x2d,
+		0x30, 0x30, 0x2d, 0x30, 0x30, 0x2d, 0x30, 0x30, 0x2d, 0x30, 0x30, 0x2d, 0x30, 0x31, 0x0c, 0x06,
+		0x00, 0x00, 0x05, 0x78, 0x3d, 0x06, 0x00, 0x00, 0x00, 0x13, 0x06, 0x06, 0x00, 0x00, 0x00, 0x02,
+		0x4d, 0x18, 0x43, 0x4f, 0x4e, 0x4e, 0x45, 0x43, 0x54, 0x20, 0x31, 0x31, 0x4d, 0x62, 0x70, 0x73,
+		0x20, 0x38, 0x30, 0x32, 0x2e, 0x31, 0x31, 0x62, 0x4f, 0x0c, 0x02, 0xee, 0x00, 0x0a, 0x01, 0x41,
+		0x64, 0x6d, 0x69, 0x6e, 0x50, 0x12, 0xbc, 0x60, 0x5b, 0x83, 0xf4, 0x5d, 0x8f, 0xc1, 0xda, 0x5a,
+		0xba, 0xa3, 0x4f, 0x7b, 0x57, 0x5e,
+	}
+
+	// Assemble the EAP object that we expect to emerge from this test.
+	pExpectedEAP := &EAP{
+		BaseLayer: BaseLayer{
+			Contents: []byte{
+				0x02, 0xee, 0x00, 0x0a, 0x01, 0x41, 0x64, 0x6d, 0x69, 0x6e,
+			},
+			Payload: nil,
+		},
+		Code:     EAPCodeResponse,
+		Id:       238,
+		Length:   0x000a,
+		Type:     EAPTypeIdentity,
+		TypeData: []byte("\x41\x64\x6d\x69\x6e"),
+	}
+
+	checkEAP("ResponseIdentify", t, testPacketEAP, pExpectedEAP)
+}

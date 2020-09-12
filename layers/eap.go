@@ -9,28 +9,78 @@ package layers
 import (
 	"encoding/binary"
 	"fmt"
+
 	"github.com/google/gopacket"
 )
 
 type EAPCode uint8
-type EAPType uint8
 
 const (
 	EAPCodeRequest  EAPCode = 1
 	EAPCodeResponse EAPCode = 2
 	EAPCodeSuccess  EAPCode = 3
 	EAPCodeFailure  EAPCode = 4
+)
 
+func (t EAPCode) String() string {
+	switch t {
+	case EAPCodeRequest:
+		return "Request"
+	case EAPCodeResponse:
+		return "Response"
+	case EAPCodeSuccess:
+		return "Success"
+	case EAPCodeFailure:
+		return "Failure"
+	default:
+		return fmt.Sprintf("Unknown(%d)", t)
+	}
+}
+
+type EAPType uint8
+
+const (
 	// EAPTypeNone means that this EAP layer has no Type or TypeData.
 	// Success and Failure EAPs will have this set.
 	EAPTypeNone EAPType = 0
 
-	EAPTypeIdentity     EAPType = 1
-	EAPTypeNotification EAPType = 2
-	EAPTypeNACK         EAPType = 3
-	EAPTypeOTP          EAPType = 4
-	EAPTypeTokenCard    EAPType = 5
+	EAPTypeIdentity     EAPType = 1  // RFC3748
+	EAPTypeNotification EAPType = 2  // RFC3748
+	EAPTypeNACK         EAPType = 3  // RFC3748
+	EAPTypeMD5          EAPType = 4  // RFC3748
+	EAPTypeOTP          EAPType = 5  // RFC3748
+	EAPTypeGTC          EAPType = 6  // RFC3748
+	EAPTypeTLS          EAPType = 13 // RFC5216
+	EAPTypeTTLS         EAPType = 21 // RFC5281
+	EAPTypePEAP         EAPType = 25 // draft-josefsson-pppext-eap-tls-eap-06
 )
+
+func (t EAPType) String() string {
+	switch t {
+	case EAPTypeNone:
+		return "None"
+	case EAPTypeIdentity:
+		return "Identity"
+	case EAPTypeNotification:
+		return "Notification"
+	case EAPTypeNACK:
+		return "Nak (Response only)"
+	case EAPTypeMD5:
+		return "MD5-Challenge"
+	case EAPTypeOTP:
+		return "One Time Password (OTP)"
+	case EAPTypeGTC:
+		return "Generic Token Card (GTC)"
+	case EAPTypeTLS:
+		return "TLS"
+	case EAPTypeTTLS:
+		return "TTLS"
+	case EAPTypePEAP:
+		return "PEAP"
+	default:
+		return fmt.Sprintf("Unknown(%d)", t)
+	}
+}
 
 // EAP defines an Extensible Authentication Protocol (rfc 3748) layer.
 type EAP struct {
@@ -51,13 +101,16 @@ func (e *EAP) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
 		df.SetTruncated()
 		return fmt.Errorf("EAP length %d too short", len(data))
 	}
+
 	e.Code = EAPCode(data[0])
 	e.Id = data[1]
 	e.Length = binary.BigEndian.Uint16(data[2:4])
+
 	if len(data) < int(e.Length) {
 		df.SetTruncated()
 		return fmt.Errorf("EAP length %d too short, %d expected", len(data), e.Length)
 	}
+
 	switch {
 	case e.Length > 4:
 		e.Type = EAPType(data[4])
@@ -68,8 +121,16 @@ func (e *EAP) DecodeFromBytes(data []byte, df gopacket.DecodeFeedback) error {
 	default:
 		return fmt.Errorf("invalid EAP length %d", e.Length)
 	}
-	e.BaseLayer.Contents = data[:e.Length]
-	e.BaseLayer.Payload = data[e.Length:] // Should be 0 bytes
+
+	e.BaseLayer = BaseLayer{Contents: data}
+
+	switch e.Type {
+	case EAPTypeTLS, EAPTypeTTLS, EAPTypePEAP:
+		e.BaseLayer.Payload = data
+	default:
+		e.BaseLayer.Payload = nil
+	}
+
 	return nil
 }
 
@@ -80,21 +141,26 @@ func (e *EAP) SerializeTo(b gopacket.SerializeBuffer, opts gopacket.SerializeOpt
 	if opts.FixLengths {
 		e.Length = uint16(len(e.TypeData) + 1)
 	}
+
 	size := len(e.TypeData) + 4
 	if size > 4 {
 		size++
 	}
+
 	bytes, err := b.PrependBytes(size)
 	if err != nil {
 		return err
 	}
+
 	bytes[0] = byte(e.Code)
 	bytes[1] = e.Id
 	binary.BigEndian.PutUint16(bytes[2:], e.Length)
+
 	if size > 4 {
 		bytes[4] = byte(e.Type)
 		copy(bytes[5:], e.TypeData)
 	}
+
 	return nil
 }
 
@@ -105,10 +171,23 @@ func (e *EAP) CanDecode() gopacket.LayerClass {
 
 // NextLayerType returns the layer type contained by this DecodingLayer.
 func (e *EAP) NextLayerType() gopacket.LayerType {
-	return gopacket.LayerTypeZero
+	switch e.Type {
+	case EAPTypeTLS:
+		return gopacket.LayerTypePayload
+	case EAPTypeTTLS:
+		return gopacket.LayerTypePayload
+	case EAPTypePEAP:
+		return gopacket.LayerTypePayload
+	default:
+		return gopacket.LayerTypeZero
+	}
+}
+
+func (e *EAP) Payload() []byte {
+	return e.BaseLayer.Payload
 }
 
 func decodeEAP(data []byte, p gopacket.PacketBuilder) error {
-	e := &EAP{}
-	return decodingLayerDecoder(e, data, p)
+	eap := &EAP{}
+	return decodingLayerDecoder(eap, data, p)
 }
